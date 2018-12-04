@@ -7,9 +7,10 @@ log = logging.getLogger(__name__)
 def gps_server(dev, q):
     with serial.Serial(dev, timeout=5) as port:
         while True:
-            res = False
+            res = ""
             try:
                 line = port.readline()
+               # log.info("GPS Data: {}".format(line))
             except:
                 log.warning("Got an exception")
                 break
@@ -44,14 +45,16 @@ def parse_rmc(line):
     res["time"] = parse_time(fields[1])
     res["Lat"] = coordinate(fields[3]) + " " + fields[4]
     res["Long"]= coordinate(fields[5]) + " " + fields[6]
-    res["Vel"] = parse_float(fields[7])
-    res["Hdg"] = parse_float(fields[8])
+    if len(fields[7]) > 0:
+        res["Vel"] = parse_float(fields[7])
+    if len(fields[8]) > 0:
+        res["Hdg"] = parse_float(fields[8])
     return res
 
 def parse_float(number_string):
     try:
         res= float(number_string)
-    except:
+    except ValueError:
         log.debug("Exception parsing float %s ", number_string)
         res = number_string
     return res
@@ -86,8 +89,8 @@ if __name__ == "__main__":
     server_thread.start()
     time.sleep(2)
     while not fifo.empty():
-        log.debug("We got %s", fifo.get())
+        log.info(fifo.get())
 
-    server_thread.join(10)
+    server_thread.join(20)
 
 
