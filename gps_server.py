@@ -98,7 +98,7 @@ class GPSServer(threading.Thread):
 if __name__ == "__main__":
     import threading
     import time
-    #logging.basicConfig(level = logging.DEBUG)
+    logging.basicConfig(level = logging.DEBUG)
     fifo = Queue()
     server_thread =  GPSServer("/dev/ttyACM0", fifo)
     server_thread.setDaemon(True)
