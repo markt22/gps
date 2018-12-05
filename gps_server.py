@@ -1,96 +1,112 @@
 import serial
 import logging
 from Queue import Queue
+import threading
 
-log = logging.getLogger(__name__)
 
-def gps_server(dev, q):
-    with serial.Serial(dev, timeout=5) as port:
+class GPSServer(threading.Thread):
+    def __init__(self, dev, q):
+        """ Init the class variables
+        """
+        threading.Thread.__init__(self)
+        self.q = q
+        self.log = logging.getLogger(__name__)
+        try:
+            self.port = serial.Serial(dev, timeout = 5) 
+        except:
+            self.log.debug("Exception while opening port {}".format(dev))
+
+    def run(self):
         while True:
             res = ""
             try:
-                line = port.readline()
-               # log.info("GPS Data: {}".format(line))
+                line = self.port.readline()
+                self.log.debug("GPS Data: {}".format(line))
+		data = line.split(',')
             except:
-                log.warning("Got an exception")
+                self.log.warning("Got an exception")
                 break
-            if "RMC" in line:
-                res = parse_rmc(line)
-            elif "VTG" in line:
-                res = parse_vtg(line)
+
+            if "RMC" in data[0]:
+                res = self._parse_rmc(data)
+            elif "VTG" in data[0]:
+                res = self._parse_vtg(data)
+            
             if res:
-                q.put(res)
+                self.log.info("resr {}".format(res))
+                self.q.put(res)
         
 
-def parse_gga(line):
-    data = line.split(',')
-    time = data[1][:-7]+":"+data[1][-7:-5]+":"+data[1][-5:]
-    lat = data[2][:2]+" "+ data[2][2:]+" " + data[3]
-    long = data[4][:3]+" "+data[4][3:]+" " + data[5]
-    if int(data[6]) > 0 and int(data[6])<6:
-        status = True
-    else:
-        status = False
-    alt = float(data[9])
-    return {"Time" : time, "Lat" : lat, "Long": long, "Status" : status, "Alt" : alt}
+    def _parse_gga(self, data):
+        """Parses the GPS GGA message with the following format
+          Type  Time       Lat          Long          
+        $GPGGA,191117.00,3858.16005,N,10445.70181,W,2,05,2.34,2105.9,M,-22.1,M,,0000*5F
+        """
+        if not len(data) == 14:
+            return
+        time = data[1][:-7]+":"+data[1][-7:-5]+":"+data[1][-5:]
+        lat = data[2][:2]+" "+ data[2][2:]+" " + data[3]
+        long = data[4][:3]+" "+data[4][3:]+" " + data[5]
+        if int(data[6]) > 0 and int(data[6])<6:
+            status = True
+        else:
+            status = False
+        alt = float(data[9])
+        return {"Time" : time, "Lat" : lat, "Long": long, "Status" : status, "Alt" : alt}
 
-def parse_vtg(line):
-    data = line.split(',')
-    #log.debug("Line is %s", line)
-    return {"Vel": data[5]}
+    def _parse_vtg(self, data):
+        return {"Vel": data[5]}
 
-def parse_rmc(line):
-    res = {}
-    fields = line.split(',')
-    res["time"] = parse_time(fields[1])
-    res["Lat"] = coordinate(fields[3]) + " " + fields[4]
-    res["Long"]= coordinate(fields[5]) + " " + fields[6]
-    if len(fields[7]) > 0:
-        res["Vel"] = parse_float(fields[7])
-    if len(fields[8]) > 0:
-        res["Hdg"] = parse_float(fields[8])
-    return res
+    def _parse_rmc(self, fields):
+        res = {}
+        res["time"] = self._parse_time(fields[1])
+        res["Lat"] = self._coordinate(fields[3]) + " " + fields[4]
+        res["Long"]= self._coordinate(fields[5]) + " " + fields[6]
+        if len(fields[7]) > 0:
+            res["Vel"] = self._parse_float(fields[7])
+        if len(fields[8]) > 0:
+            res["Hdg"] = self._parse_float(fields[8])
+        return res
 
-def parse_float(number_string):
-    try:
-        res= float(number_string)
-    except ValueError:
-        log.debug("Exception parsing float %s ", number_string)
-        res = number_string
-    return res
+    def _parse_float(self, number_string):
+        try:
+            res= float(number_string)
+        except ValueError:
+            self.log.debug("Exception parsing float %s ", number_string)
+            res = number_string
+        return res
 
-def parse_time(data):
-    if len(data) >= 6:
-        res = data[:2] + ":" + data[2:4] + ":" + data[4:6]
-    else:
-        log.warning("Invalid time string %s ")
-        res = "00:00:00"
-    return res
+    def _parse_time(self, data):
+        if len(data) >= 6:
+            res = data[:2] + ":" + data[2:4] + ":" + data[4:6]
+        else:
+            self.log.warning("Invalid time string %s ")
+            res = "00:00:00"
+        return res
 
-def coordinate(data):
-    dot = data.find(".")
-    if dot > 0:
-        fraction = data[dot-2:]
-        deg = data[: dot-2]
-        coord = deg + " " + fraction
-    else:
-        coord = "0 00.000"
-    return coord
+    def _coordinate(self, data):
+        dot = data.find(".")
+        if dot > 0:
+            fraction = data[dot-2:]
+            deg = data[: dot-2]
+            coord = deg + " " + fraction
+        else:
+            coord = "0 00.000"
+        return coord
 
 
 if __name__ == "__main__":
     import threading
     import time
-    logging.basicConfig(level = logging.DEBUG)
+    #logging.basicConfig(level = logging.DEBUG)
     fifo = Queue()
-    server_thread = threading.Thread(target = gps_server, 
-                                     args = ("/dev/ttyACM0", fifo,))
+    server_thread =  GPSServer("/dev/ttyACM0", fifo)
     server_thread.setDaemon(True)
     server_thread.start()
-    time.sleep(2)
+    time.sleep(5)
     while not fifo.empty():
-        log.info(fifo.get())
+        print(fifo.get())
 
-    server_thread.join(20)
+    server_thread.join(1)
 
 
