@@ -4,6 +4,7 @@ from Queue import Queue
 import threading
 import math
 import datetime
+import pickle
 
 _log = logging.getLogger(__name__)
 
@@ -36,7 +37,7 @@ class GPS_Coordinate():
         self.velocity = 0.0
         self.heading = 0
         self.__alt_mode = GPS_Units().meters
-        self.date_time = None
+        self.date_time = datetime.datetime.now()
  
     def __str__(self):
        return self.map_api()
@@ -70,7 +71,7 @@ class GPS_Coordinate():
             Calculates the time since the the provided point
         """
         diff = 0
-	if isinstance(coordinate, GPS_Coordinate):
+	if isinstance(coordinate, GPS_Coordinate) and self.date_time and coordinate.date_time:
             diff = coordinate.date_time - self.date_time
             print diff
             diff = abs(diff.days * 1440) + int(diff.seconds / 60)
@@ -84,7 +85,8 @@ class GPS_Path():
         self.path = []
         self.min_distance = min_distance
         self.stop_time = stop_time
- 
+        self.datetime = None
+        self.filename = None
 
     def __str__(self):
         ll_list = [ x.map_api() for x in self.path ]
@@ -92,6 +94,7 @@ class GPS_Path():
 
     def add_point(self, point):
         if isinstance(point, GPS_Coordinate):
+            print ("adding point %s " % (str(point)))
             path_length = len(self.path)
             if path_length > 1 and self.active:
                 """ The path has been started now capture a point
@@ -100,8 +103,23 @@ class GPS_Path():
                 distance = point.distance_from(self.path[-1])
                 time = point.time_since(self.path[-1])
                 if distance >= self.min_distance:
+                    """ Have we moved the minimum  distance from the previous 
+                        coordinate in the path?
+                         If so add the point to the path
+                    """
                     self.path.append(point)
+                    try:
+                        with open(self.filename,"a") as f:
+                            f.write(str(point))
+                    except:
+                        _log.warning("Unable to write point to file")
+                        pass
+                        
                 elif time > self.stop_time:
+                    """ To get here we haven't moved the minimum distance from
+                        the last recorded point, and we have been sitting >
+                        the stop time, therefore we need to stop the path
+                    """ 
                     self.active = false
             elif len(self.path) == 1:
                 """ The starting point is set, however we haven't travelled anywhere yet
@@ -110,13 +128,30 @@ class GPS_Path():
                 if distance > (5 * self.min_distance):
                     self.path.append(point)
                     self.active = True
+                    self.datetime = point.date_time
+
+                    self.filename = "".join(["data/",self.datetime.strftime( "%m-%d_%H-%M"), "_path.log"])
+                    try:
+                        with open(self.filename,"w+") as f:
+                            f.write(str(point))
+                    except:
+                        _log.warning("Unable to create the path  file")
+                    pass
                     _log.info("GPS_Path::ad_point: The path has started")
             else:
                 self.path = [point]
 
         else:
             _log.warning("GPS_Path::add_point:  New point is not a GPS_Coordinate.  Point ignored")
- 
+     
+    def savePath(self, file):
+        with open(file, 'wb') as f:
+            pickle.dump(self, f, -1)
+
+    def loadPath(self, file):
+        _log.debug("GPS_Path::loadPath: loading path {}".format(file))
+        with open(file, 'rb') as f:
+            self = pickle.load(f)
 
 
 class GPS_Server(threading.Thread):
@@ -132,7 +167,7 @@ class GPS_Server(threading.Thread):
 
     def run(self):
         while True:
-            res = ""
+            res = None
             try:
                 line = self.port.readline()
                 _log.debug("GPS Data: {}".format(line))
@@ -143,11 +178,11 @@ class GPS_Server(threading.Thread):
 
             if "RMC" in data[0]:
                 res = self.__parse_rmc(data)
-            elif "VTG" in data[0]:
+            elif "VTG1" in data[0]:
                 res = self.__parse_vtg(data)
             
             if res:
-                _log.info("resr {}".format(res))
+                _log.debug("resr {}".format(res))
                 self.q.put(res)
 
     def __parse_gga(self, data):
@@ -171,15 +206,18 @@ class GPS_Server(threading.Thread):
         return {"Vel": data[5]}
 
     def __parse_rmc(self, fields):
-        res = GPS_Coordinate()
-        res.time = self.__parse_time(fields[1])
-        res.lattitude = self.__coordinate(fields[3], fields[4]) 
-        res.longitude= self.__coordinate(fields[5], fields[6]) 
-        if len(fields[7]) > 0:
-            res.velocity = _parse_float(fields[7])
-        if len(fields[8]) > 0:
-            res.heading = _parse_float(fields[8])
-        res.date_time = datetime.datetime(int(fields[9][-2:]), int(fields[9][-4:-2]), int(fields[9][0:2]),int(fields[1][:-7]), int(fields[1][-7:-5]), int(fields[1][-5:-3]))
+        if fields[2] == 'A' :
+            res = GPS_Coordinate()
+            res.time = self.__parse_time(fields[1])
+            res.latitude = self.__coordinate(fields[3], fields[4]) 
+            res.longitude= self.__coordinate(fields[5], fields[6]) 
+            if len(fields[7]) > 0:
+                res.velocity = _parse_float(fields[7])
+            if len(fields[8]) > 0:
+                res.heading = _parse_float(fields[8])
+            res.date_time = datetime.datetime(int(fields[9][-2:]), int(fields[9][-4:-2]), int(fields[9][0:2]),int(fields[1][:-7]), int(fields[1][-7:-5]), int(fields[1][-5:-3]))
+        else:
+            res = None
         return res
 
     def __parse_time(self, data):
@@ -195,6 +233,7 @@ class GPS_Server(threading.Thread):
         if dot > 0:
             fraction = data[dot-2:]
             deg = data[: dot-2]
+            #print ("degrees %s fraction %s data %s direction %s" % (deg,fraction, data, direction))
             coord = _parse_float(deg) + (_parse_float(fraction)/60.0)
             if direction.upper() == "W" or direction.upper() == "S":
                 coord = -coord
@@ -252,11 +291,38 @@ def _Test_GPS_Path():
         p1 = GPS_Coordinate(lat = pt[0], long = pt[1])
         a_path.add_point(p1)
     print a_path
+    with open('a_path','wb') as f:
+        pickle.dump(a_path,f)
+    
+    with open('a_path','rb') as f:
+        new_path = pickle.load(f)
+    #new_path.loadPath('a_path')
+    print "new pathg is ", new_path
+
+def dataCollect():
+    import time
+    #create the queue and the gps server
+    fifo = Queue()
+    print "Starting server"
+    server_thread =  GPS_Server("/dev/ttyACM0", fifo)
+    server_thread.setDaemon(True)
+    server_thread.start()
+    print "Server started"
+    time.sleep(3)
+    print "Creating a path"
+    a_path = GPS_Path(min_distance = 50)
+    while True:
+        if not fifo.empty():
+            _log.debug("LOOP:adding point %s " % (str(fifo.get())))
+            a_path.add_point(fifo.get())
+        time.sleep(0.5)
+
+
 
 if __name__ == "__main__":
-    logging.basicConfig(level = logging.DEBUG)
-    _Test_GPS_Server()
-    _Test_GPS_Coordinate()
-    _Test_GPS_Path()
-
+    logging.basicConfig(filename="log/gps.log",level = logging.DEBUG) 
+    #_Test_GPS_Server()
+    #_Test_GPS_Coordinate()
+    #_Test_GPS_Path()
+    dataCollect()
 
